@@ -1,0 +1,16 @@
+# Binaries
+/commentlint
+/custom-gcl
+*.exe
+*.so
+*.dylib
+*.test
+
+# Coverage
+*.out
+coverage.*
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
