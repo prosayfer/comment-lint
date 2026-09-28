@@ -69,3 +69,11 @@ func TestInvalidSettings(t *testing.T) {
 func TestCommentLineCounting(t *testing.T) {
 	run(t, map[string]any{"funcs": map[string]any{"ratio": 0}}, "counting")
 }
+
+func TestFuncDocFormulaDefaults(t *testing.T) {
+	run(t, nil, "formula")
+}
+
+func TestFuncDocMinLinesOverride(t *testing.T) {
+	run(t, map[string]any{"funcs": map[string]any{"min-lines": 2}}, "minlines")
+}

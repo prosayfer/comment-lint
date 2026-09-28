@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/ast"
+	"go/scanner"
+	"go/token"
+	"math"
 	"strings"
 
 	"github.com/golangci/plugin-module-register/register"
@@ -86,18 +89,104 @@ func (p *plugin) GetLoadMode() string {
 }
 
 func (p *plugin) run(pass *analysis.Pass) (any, error) {
-	for _, file := range pass.Files {
-		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Doc == nil {
-				continue
-			}
-			if lines, allowed := commentLines(fn.Doc), p.settings.Funcs.MaxLines; allowed > 0 && lines > allowed {
-				pass.Reportf(fn.Doc.Pos(), "func doc has %d comment lines, allowed %d (funcs.max-lines)", lines, allowed)
+	funcDoc := rule{group: "funcs", limits: p.settings.Funcs}
+	for _, f := range pass.Files {
+		tf := pass.Fset.File(f.Pos())
+		src, err := pass.ReadFile(tf.Name())
+		if err != nil {
+			return nil, err
+		}
+		c := checker{pass: pass, code: codeLines(tf, src)}
+		for _, decl := range f.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				c.check(fn.Doc, "func doc", funcDoc, fn)
 			}
 		}
 	}
 	return nil, nil
+}
+
+type rule struct {
+	group string
+	limits
+}
+
+// allowance returns the allowed comment lines and the setting that decided them, or "" when no limit applies.
+func (r rule) allowance(code int) (int, string) {
+	allowed, by := math.MaxInt, ""
+	if r.Ratio > 0 {
+		allowed, by = ceil(float64(code)*r.Ratio), "ratio"
+	}
+	if r.MinLines > 0 && r.MinLines >= allowed {
+		allowed, by = r.MinLines, "min-lines"
+	}
+	if r.MaxLines > 0 && r.MaxLines <= allowed {
+		allowed, by = r.MaxLines, "max-lines"
+	}
+	return allowed, by
+}
+
+// ceil tolerates float error, so that 20 × 0.15 rounds up to 3 rather than 4.
+func ceil(x float64) int {
+	return int(math.Ceil(x - 1e-9))
+}
+
+type checker struct {
+	pass *analysis.Pass
+	code lineSet
+}
+
+func (c *checker) check(g *ast.CommentGroup, kind string, r rule, subject ast.Node) {
+	if g == nil {
+		return
+	}
+	allowed, by := r.allowance(c.code.count(subject.Pos(), subject.End()))
+	if lines := commentLines(g); by != "" && lines > allowed {
+		c.pass.Reportf(g.Pos(), "%s has %d comment lines, allowed %d (%s.%s)", kind, lines, allowed, r.group, by)
+	}
+}
+
+// lineSet holds the lines of a file that contain code, keyed by line number.
+type lineSet struct {
+	file  *token.File
+	lines map[int]bool
+}
+
+func codeLines(tf *token.File, src []byte) lineSet {
+	set := lineSet{file: tf, lines: map[int]bool{}}
+	var s scanner.Scanner
+	s.Init(tf, src, nil, 0)
+	for {
+		pos, tok, lit := s.Scan()
+		if tok == token.EOF {
+			return set
+		}
+		if tok == token.SEMICOLON && lit == "\n" {
+			continue
+		}
+		end := pos
+		if tok == token.STRING {
+			end += token.Pos(len(lit) - 1)
+		}
+		for line := set.line(pos); line <= set.line(end); line++ {
+			set.lines[line] = true
+		}
+	}
+}
+
+// line ignores //line directives, which would otherwise remap positions.
+func (s lineSet) line(p token.Pos) int {
+	return s.file.PositionFor(p, false).Line
+}
+
+func (s lineSet) count(from, to token.Pos) int {
+	n := 0
+	for line := s.line(from); line <= s.line(to); line++ {
+		if s.lines[line] {
+			n++
+		}
+	}
+	return n
 }
 
 func commentLines(g *ast.CommentGroup) int {
