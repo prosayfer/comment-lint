@@ -93,3 +93,15 @@ func TestExemptionsAndSkippedFiles(t *testing.T) {
 func TestInBodyAndTrailingComments(t *testing.T) {
 	run(t, nil, "inbody")
 }
+
+func TestFuncDocComplexityCeiling(t *testing.T) {
+	run(t, map[string]any{"funcs": map[string]any{"complexity-ratio": 0.1}}, "complexity")
+}
+
+func TestFuncDocComplexityCeilingOffByDefault(t *testing.T) {
+	run(t, nil, "complexityoff")
+}
+
+func TestComplexityCeilingSkipsInBodyAndTrailingComments(t *testing.T) {
+	run(t, map[string]any{"funcs": map[string]any{"complexity-ratio": 0.1, "min-lines": 0}}, "complexityinbody")
+}

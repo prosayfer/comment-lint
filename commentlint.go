@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/golangci/plugin-module-register/register"
+	"github.com/uudashr/gocognit"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/ast/astutil"
 )
@@ -23,29 +24,29 @@ func init() {
 }
 
 type limits struct {
+	MaxLines int     `json:"max-lines"`
+	Ratio    float64 `json:"ratio"`
+	MinLines int     `json:"min-lines"`
+}
+
+// funcLimits alone has complexity-ratio, so strict decoding rejects that key under decls.
+type funcLimits struct {
 	MaxLines        int     `json:"max-lines"`
 	Ratio           float64 `json:"ratio"`
 	MinLines        int     `json:"min-lines"`
 	ComplexityRatio float64 `json:"complexity-ratio"`
 }
 
-// declLimits has no complexity-ratio, so strict decoding rejects that key under decls.
-type declLimits struct {
-	MaxLines int     `json:"max-lines"`
-	Ratio    float64 `json:"ratio"`
-	MinLines int     `json:"min-lines"`
-}
-
 type settings struct {
-	Funcs limits     `json:"funcs"`
-	Decls declLimits `json:"decls"`
+	Funcs funcLimits `json:"funcs"`
+	Decls limits     `json:"decls"`
 }
 
 // New builds the plugin from the raw settings golangci-lint decodes from .golangci.yml.
 func New(rawSettings any) (register.LinterPlugin, error) {
 	s := settings{
-		Funcs: limits{MaxLines: 3, Ratio: 0.15, MinLines: 1},
-		Decls: declLimits{MaxLines: 2, Ratio: 1, MinLines: 1},
+		Funcs: funcLimits{MaxLines: 3, Ratio: 0.15, MinLines: 1},
+		Decls: limits{MaxLines: 2, Ratio: 1, MinLines: 1},
 	}
 	raw, err := json.Marshal(rawSettings)
 	if err != nil {
@@ -92,9 +93,11 @@ func (p *plugin) GetLoadMode() string {
 }
 
 func (p *plugin) run(pass *analysis.Pass) (any, error) {
-	funcs := rule{group: "funcs", limits: p.settings.Funcs}
-	d := p.settings.Decls
-	decls := rule{group: "decls", limits: limits{MaxLines: d.MaxLines, Ratio: d.Ratio, MinLines: d.MinLines}}
+	fl := p.settings.Funcs
+	funcs := rule{group: "funcs", limits: limits{MaxLines: fl.MaxLines, Ratio: fl.Ratio, MinLines: fl.MinLines}}
+	funcDocs := funcs
+	funcDocs.complexityRatio = fl.ComplexityRatio
+	decls := rule{group: "decls", limits: p.settings.Decls}
 	for _, f := range pass.Files {
 		tf := pass.Fset.File(f.Pos())
 		if strings.HasSuffix(tf.Name(), "_test.go") || ast.IsGenerated(f) {
@@ -104,7 +107,7 @@ func (p *plugin) run(pass *analysis.Pass) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		c := checker{pass: pass, code: codeLines(tf, src), funcs: funcs, decls: decls}
+		c := checker{pass: pass, code: codeLines(tf, src), funcs: funcs, funcDocs: funcDocs, decls: decls}
 		for _, decl := range f.Decls {
 			c.checkDecl(decl)
 		}
@@ -118,6 +121,9 @@ func (p *plugin) run(pass *analysis.Pass) (any, error) {
 type rule struct {
 	group string
 	limits
+	// complexityRatio caps the allowance by complexity, the cognitive complexity of the func; set only for func docs.
+	complexityRatio float64
+	complexity      int
 }
 
 // allowance returns the allowed comment lines and the setting that decided them, or "" when no limit applies.
@@ -125,6 +131,11 @@ func (r rule) allowance(code int) (int, string) {
 	allowed, by := math.MaxInt, ""
 	if r.Ratio > 0 {
 		allowed, by = ceil(float64(code)*r.Ratio), "ratio"
+	}
+	if r.complexityRatio > 0 {
+		if c := ceil(float64(r.complexity) * r.complexityRatio); c <= allowed {
+			allowed, by = c, "complexity-ratio"
+		}
 	}
 	if r.MinLines > 0 && r.MinLines >= allowed {
 		allowed, by = r.MinLines, "min-lines"
@@ -141,9 +152,9 @@ func ceil(x float64) int {
 }
 
 type checker struct {
-	pass         *analysis.Pass
-	code         lineSet
-	funcs, decls rule
+	pass                   *analysis.Pass
+	code                   lineSet
+	funcs, funcDocs, decls rule
 }
 
 func (c *checker) check(g *ast.CommentGroup, kind string, r rule, code int) {
@@ -159,7 +170,9 @@ func (c *checker) check(g *ast.CommentGroup, kind string, r rule, code int) {
 func (c *checker) checkDecl(decl ast.Decl) {
 	switch decl := decl.(type) {
 	case *ast.FuncDecl:
-		c.check(decl.Doc, "func doc", c.funcs, c.code.count(decl))
+		doc := c.funcDocs
+		doc.complexity = gocognit.Complexity(decl)
+		c.check(decl.Doc, "func doc", doc, c.code.count(decl))
 	case *ast.GenDecl:
 		if decl.Tok == token.IMPORT {
 			return
