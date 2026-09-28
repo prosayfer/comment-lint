@@ -89,3 +89,7 @@ func TestStructDocExcludesFieldComments(t *testing.T) {
 func TestExemptionsAndSkippedFiles(t *testing.T) {
 	run(t, nil, "exempt")
 }
+
+func TestInBodyAndTrailingComments(t *testing.T) {
+	run(t, nil, "inbody")
+}

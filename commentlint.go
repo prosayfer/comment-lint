@@ -15,6 +15,7 @@ import (
 
 	"github.com/golangci/plugin-module-register/register"
 	"golang.org/x/tools/go/analysis"
+	"golang.org/x/tools/go/ast/astutil"
 )
 
 func init() {
@@ -91,9 +92,9 @@ func (p *plugin) GetLoadMode() string {
 }
 
 func (p *plugin) run(pass *analysis.Pass) (any, error) {
-	funcDoc := rule{group: "funcs", limits: p.settings.Funcs}
+	funcs := rule{group: "funcs", limits: p.settings.Funcs}
 	d := p.settings.Decls
-	declDoc := rule{group: "decls", limits: limits{MaxLines: d.MaxLines, Ratio: d.Ratio, MinLines: d.MinLines}}
+	decls := rule{group: "decls", limits: limits{MaxLines: d.MaxLines, Ratio: d.Ratio, MinLines: d.MinLines}}
 	for _, f := range pass.Files {
 		tf := pass.Fset.File(f.Pos())
 		if strings.HasSuffix(tf.Name(), "_test.go") || ast.IsGenerated(f) {
@@ -103,24 +104,12 @@ func (p *plugin) run(pass *analysis.Pass) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		c := checker{pass: pass, code: codeLines(tf, src)}
+		c := checker{pass: pass, code: codeLines(tf, src), funcs: funcs, decls: decls}
 		for _, decl := range f.Decls {
-			switch decl := decl.(type) {
-			case *ast.FuncDecl:
-				c.check(decl.Doc, "func doc", funcDoc, decl)
-			case *ast.GenDecl:
-				if decl.Tok == token.IMPORT {
-					continue
-				}
-				if slices.ContainsFunc(decl.Specs, func(spec ast.Spec) bool { return !c.isContract(spec) }) {
-					c.check(decl.Doc, "decl doc", declDoc, decl)
-				}
-				for _, spec := range decl.Specs {
-					if !c.isContract(spec) {
-						c.checkSpec(spec, declDoc)
-					}
-				}
-			}
+			c.checkDecl(decl)
+		}
+		for _, g := range f.Comments {
+			c.checkInBody(f, g)
 		}
 	}
 	return nil, nil
@@ -152,37 +141,93 @@ func ceil(x float64) int {
 }
 
 type checker struct {
-	pass *analysis.Pass
-	code lineSet
+	pass         *analysis.Pass
+	code         lineSet
+	funcs, decls rule
 }
 
-func (c *checker) check(g *ast.CommentGroup, kind string, r rule, subject ast.Node) {
+func (c *checker) check(g *ast.CommentGroup, kind string, r rule, code int) {
 	if g == nil {
 		return
 	}
-	allowed, by := r.allowance(c.code.count(subject.Pos(), subject.End()))
+	allowed, by := r.allowance(code)
 	if lines := commentLines(g); by != "" && lines > allowed {
 		c.pass.Reportf(g.Pos(), "%s has %d comment lines, allowed %d (%s.%s)", kind, lines, allowed, r.group, by)
 	}
 }
 
-func (c *checker) checkSpec(spec ast.Spec, r rule) {
+func (c *checker) checkDecl(decl ast.Decl) {
+	switch decl := decl.(type) {
+	case *ast.FuncDecl:
+		c.check(decl.Doc, "func doc", c.funcs, c.code.count(decl))
+	case *ast.GenDecl:
+		if decl.Tok == token.IMPORT {
+			return
+		}
+		if slices.ContainsFunc(decl.Specs, func(spec ast.Spec) bool { return !c.isContract(spec) }) {
+			c.check(decl.Doc, "decl doc", c.decls, c.code.count(decl))
+		}
+		for _, spec := range decl.Specs {
+			if !c.isContract(spec) {
+				c.checkSpec(spec)
+			}
+		}
+	}
+}
+
+func (c *checker) checkSpec(spec ast.Spec) {
 	switch spec := spec.(type) {
 	case *ast.ValueSpec:
-		c.check(spec.Doc, "decl doc", r, spec)
+		c.check(spec.Doc, "decl doc", c.decls, c.code.count(spec))
+		c.check(spec.Comment, "trailing comment", c.decls, 1)
 	case *ast.TypeSpec:
-		c.check(spec.Doc, "decl doc", r, spec)
+		c.check(spec.Doc, "decl doc", c.decls, c.code.count(spec))
+		c.check(spec.Comment, "trailing comment", c.decls, 1)
 	}
 	ast.Inspect(spec, func(n ast.Node) bool {
 		if st, ok := n.(*ast.StructType); ok {
 			for _, field := range st.Fields.List {
 				if _, isFunc := c.pass.TypesInfo.TypeOf(field.Type).Underlying().(*types.Signature); !isFunc {
-					c.check(field.Doc, "field comment", r, field)
+					c.check(field.Doc, "field comment", c.decls, c.code.count(field))
+					c.check(field.Comment, "trailing comment", c.decls, 1)
 				}
 			}
 		}
 		return true
 	})
+}
+
+// checkInBody measures a comment inside a func body against the node it precedes within its innermost enclosing node.
+func (c *checker) checkInBody(f *ast.File, g *ast.CommentGroup) {
+	path, _ := astutil.PathEnclosingInterval(f, g.Pos(), g.End())
+	if len(path) < 2 {
+		return
+	}
+	if fn, ok := path[len(path)-2].(*ast.FuncDecl); !ok || fn.Body == nil || g.Pos() < fn.Body.Lbrace {
+		return
+	}
+	if slices.ContainsFunc(path, func(n ast.Node) bool { _, ok := n.(*ast.InterfaceType); return ok }) {
+		return
+	}
+	if c.code.startsBefore(g.Pos()) {
+		c.check(g, "trailing comment", c.funcs, 1)
+		return
+	}
+	var next ast.Node
+	ast.Inspect(path[0], func(n ast.Node) bool {
+		if n == path[0] {
+			return true
+		}
+		if next == nil && n != nil && n.Pos() >= g.End() {
+			next = n
+		}
+		return false
+	})
+	code := 1
+	if next != nil {
+		code = c.code.count(next)
+	}
+	c.check(g, "in-body comment", c.funcs, code)
 }
 
 // isContract reports whether spec declares an interface or func type, whose docs describe a contract and are exempt.
@@ -198,14 +243,14 @@ func (c *checker) isContract(spec ast.Spec) bool {
 	return false
 }
 
-// lineSet holds the lines of a file that contain code, keyed by line number.
+// lineSet maps each line of a file that contains code to the position of its first code token.
 type lineSet struct {
 	file  *token.File
-	lines map[int]bool
+	lines map[int]token.Pos
 }
 
 func codeLines(tf *token.File, src []byte) lineSet {
-	set := lineSet{file: tf, lines: map[int]bool{}}
+	set := lineSet{file: tf, lines: map[int]token.Pos{}}
 	var s scanner.Scanner
 	s.Init(tf, src, nil, 0)
 	for {
@@ -221,7 +266,9 @@ func codeLines(tf *token.File, src []byte) lineSet {
 			end += token.Pos(len(lit) - 1)
 		}
 		for line := set.line(pos); line <= set.line(end); line++ {
-			set.lines[line] = true
+			if _, ok := set.lines[line]; !ok {
+				set.lines[line] = pos
+			}
 		}
 	}
 }
@@ -231,14 +278,20 @@ func (s lineSet) line(p token.Pos) int {
 	return s.file.PositionFor(p, false).Line
 }
 
-func (s lineSet) count(from, to token.Pos) int {
-	n := 0
-	for line := s.line(from); line <= s.line(to); line++ {
-		if s.lines[line] {
-			n++
+func (s lineSet) count(n ast.Node) int {
+	count := 0
+	for line := s.line(n.Pos()); line <= s.line(n.End()); line++ {
+		if _, ok := s.lines[line]; ok {
+			count++
 		}
 	}
-	return n
+	return count
+}
+
+// startsBefore reports whether code precedes p on its line.
+func (s lineSet) startsBefore(p token.Pos) bool {
+	first, ok := s.lines[s.line(p)]
+	return ok && first < p
 }
 
 func commentLines(g *ast.CommentGroup) int {
