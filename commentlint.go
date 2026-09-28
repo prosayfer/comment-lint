@@ -8,7 +8,9 @@ import (
 	"go/ast"
 	"go/scanner"
 	"go/token"
+	"go/types"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/golangci/plugin-module-register/register"
@@ -94,6 +96,9 @@ func (p *plugin) run(pass *analysis.Pass) (any, error) {
 	declDoc := rule{group: "decls", limits: limits{MaxLines: d.MaxLines, Ratio: d.Ratio, MinLines: d.MinLines}}
 	for _, f := range pass.Files {
 		tf := pass.Fset.File(f.Pos())
+		if strings.HasSuffix(tf.Name(), "_test.go") || ast.IsGenerated(f) {
+			continue
+		}
 		src, err := pass.ReadFile(tf.Name())
 		if err != nil {
 			return nil, err
@@ -107,9 +112,13 @@ func (p *plugin) run(pass *analysis.Pass) (any, error) {
 				if decl.Tok == token.IMPORT {
 					continue
 				}
-				c.check(decl.Doc, "decl doc", declDoc, decl)
+				if slices.ContainsFunc(decl.Specs, func(spec ast.Spec) bool { return !c.isContract(spec) }) {
+					c.check(decl.Doc, "decl doc", declDoc, decl)
+				}
 				for _, spec := range decl.Specs {
-					c.checkSpec(spec, declDoc)
+					if !c.isContract(spec) {
+						c.checkSpec(spec, declDoc)
+					}
 				}
 			}
 		}
@@ -167,11 +176,26 @@ func (c *checker) checkSpec(spec ast.Spec, r rule) {
 	ast.Inspect(spec, func(n ast.Node) bool {
 		if st, ok := n.(*ast.StructType); ok {
 			for _, field := range st.Fields.List {
-				c.check(field.Doc, "field comment", r, field)
+				if _, isFunc := c.pass.TypesInfo.TypeOf(field.Type).Underlying().(*types.Signature); !isFunc {
+					c.check(field.Doc, "field comment", r, field)
+				}
 			}
 		}
 		return true
 	})
+}
+
+// isContract reports whether spec declares an interface or func type, whose docs describe a contract and are exempt.
+func (c *checker) isContract(spec ast.Spec) bool {
+	ts, ok := spec.(*ast.TypeSpec)
+	if !ok {
+		return false
+	}
+	switch c.pass.TypesInfo.Defs[ts.Name].Type().Underlying().(type) {
+	case *types.Interface, *types.Signature:
+		return true
+	}
+	return false
 }
 
 // lineSet holds the lines of a file that contain code, keyed by line number.

@@ -85,3 +85,7 @@ func TestDeclDocsDefaults(t *testing.T) {
 func TestStructDocExcludesFieldComments(t *testing.T) {
 	run(t, map[string]any{"decls": map[string]any{"max-lines": 0}}, "declsuncapped")
 }
+
+func TestExemptionsAndSkippedFiles(t *testing.T) {
+	run(t, nil, "exempt")
+}
