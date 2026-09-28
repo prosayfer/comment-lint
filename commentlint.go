@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/ast"
+	"strings"
 
 	"github.com/golangci/plugin-module-register/register"
 	"golang.org/x/tools/go/analysis"
@@ -91,10 +92,37 @@ func (p *plugin) run(pass *analysis.Pass) (any, error) {
 			if !ok || fn.Doc == nil {
 				continue
 			}
-			if lines, allowed := len(fn.Doc.List), p.settings.Funcs.MaxLines; allowed > 0 && lines > allowed {
+			if lines, allowed := commentLines(fn.Doc), p.settings.Funcs.MaxLines; allowed > 0 && lines > allowed {
 				pass.Reportf(fn.Doc.Pos(), "func doc has %d comment lines, allowed %d (funcs.max-lines)", lines, allowed)
 			}
 		}
 	}
 	return nil, nil
+}
+
+func commentLines(g *ast.CommentGroup) int {
+	n := 0
+	for _, c := range g.List {
+		if text, ok := strings.CutPrefix(c.Text, "//"); ok {
+			if !isDirective(text) && strings.TrimSpace(text) != "" {
+				n++
+			}
+			continue
+		}
+		for _, line := range strings.Split(strings.TrimSuffix(strings.TrimPrefix(c.Text, "/*"), "*/"), "\n") {
+			if strings.TrimSpace(line) != "" {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func isDirective(text string) bool {
+	for _, prefix := range []string{"go:", "nolint", "export ", "line ", " +build"} {
+		if strings.HasPrefix(text, prefix) {
+			return true
+		}
+	}
+	return false
 }

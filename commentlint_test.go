@@ -65,3 +65,7 @@ func TestInvalidSettings(t *testing.T) {
 		})
 	}
 }
+
+func TestCommentLineCounting(t *testing.T) {
+	run(t, map[string]any{"funcs": map[string]any{"ratio": 0}}, "counting")
+}
