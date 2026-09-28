@@ -77,3 +77,11 @@ func TestFuncDocFormulaDefaults(t *testing.T) {
 func TestFuncDocMinLinesOverride(t *testing.T) {
 	run(t, map[string]any{"funcs": map[string]any{"min-lines": 2}}, "minlines")
 }
+
+func TestDeclDocsDefaults(t *testing.T) {
+	run(t, nil, "decls")
+}
+
+func TestStructDocExcludesFieldComments(t *testing.T) {
+	run(t, map[string]any{"decls": map[string]any{"max-lines": 0}}, "declsuncapped")
+}

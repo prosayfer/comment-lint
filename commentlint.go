@@ -90,6 +90,8 @@ func (p *plugin) GetLoadMode() string {
 
 func (p *plugin) run(pass *analysis.Pass) (any, error) {
 	funcDoc := rule{group: "funcs", limits: p.settings.Funcs}
+	d := p.settings.Decls
+	declDoc := rule{group: "decls", limits: limits{MaxLines: d.MaxLines, Ratio: d.Ratio, MinLines: d.MinLines}}
 	for _, f := range pass.Files {
 		tf := pass.Fset.File(f.Pos())
 		src, err := pass.ReadFile(tf.Name())
@@ -98,8 +100,17 @@ func (p *plugin) run(pass *analysis.Pass) (any, error) {
 		}
 		c := checker{pass: pass, code: codeLines(tf, src)}
 		for _, decl := range f.Decls {
-			if fn, ok := decl.(*ast.FuncDecl); ok {
-				c.check(fn.Doc, "func doc", funcDoc, fn)
+			switch decl := decl.(type) {
+			case *ast.FuncDecl:
+				c.check(decl.Doc, "func doc", funcDoc, decl)
+			case *ast.GenDecl:
+				if decl.Tok == token.IMPORT {
+					continue
+				}
+				c.check(decl.Doc, "decl doc", declDoc, decl)
+				for _, spec := range decl.Specs {
+					c.checkSpec(spec, declDoc)
+				}
 			}
 		}
 	}
@@ -144,6 +155,23 @@ func (c *checker) check(g *ast.CommentGroup, kind string, r rule, subject ast.No
 	if lines := commentLines(g); by != "" && lines > allowed {
 		c.pass.Reportf(g.Pos(), "%s has %d comment lines, allowed %d (%s.%s)", kind, lines, allowed, r.group, by)
 	}
+}
+
+func (c *checker) checkSpec(spec ast.Spec, r rule) {
+	switch spec := spec.(type) {
+	case *ast.ValueSpec:
+		c.check(spec.Doc, "decl doc", r, spec)
+	case *ast.TypeSpec:
+		c.check(spec.Doc, "decl doc", r, spec)
+	}
+	ast.Inspect(spec, func(n ast.Node) bool {
+		if st, ok := n.(*ast.StructType); ok {
+			for _, field := range st.Fields.List {
+				c.check(field.Doc, "field comment", r, field)
+			}
+		}
+		return true
+	})
 }
 
 // lineSet holds the lines of a file that contain code, keyed by line number.
