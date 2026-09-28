@@ -1,0 +1,4 @@
+version: v2.14.0
+plugins:
+  - module: github.com/prosayfer/comment-lint
+    path: .

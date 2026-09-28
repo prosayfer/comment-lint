@@ -1,0 +1,33 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # golangci-lint v2.14 itself needs a newer Go than the module's 1.24.
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+      - name: Build custom golangci-lint and the standalone binary
+        run: |
+          go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0 custom
+          go build -o commentlint ./cmd/commentlint
+      - name: Lint the example module
+        working-directory: testdata/integration
+        run: |
+          ../../custom-gcl run --issues-exit-code=0 ./... | grep -F 'func doc has 3 comment lines, allowed 1 (funcs.min-lines)'
+          ../../custom-gcl run --issues-exit-code=0 -c min-lines.golangci.yml ./... | grep -F 'func doc has 3 comment lines, allowed 2 (funcs.min-lines)'
+          # singlechecker exits 3 when it reports diagnostics.
+          { ../../commentlint ./... 2>&1 || true; } | grep -F 'func doc has 3 comment lines, allowed 1 (funcs.min-lines)'
