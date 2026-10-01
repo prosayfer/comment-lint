@@ -10,13 +10,9 @@ import (
 )
 
 func main() {
-	plugin, err := commentlint.New(nil)
+	analyzer, err := commentlint.NewAnalyzer(commentlint.DefaultSettings())
 	if err != nil {
 		log.Fatal(err)
 	}
-	analyzers, err := plugin.BuildAnalyzers()
-	if err != nil {
-		log.Fatal(err)
-	}
-	singlechecker.Main(analyzers[0])
+	singlechecker.Main(analyzer)
 }

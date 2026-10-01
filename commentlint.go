@@ -23,31 +23,70 @@ func init() {
 	register.Plugin("commentlint", New)
 }
 
-type limits struct {
+// Limits caps a comment by max-lines, by ratio × code lines, and from below by min-lines. Zero disables a limit.
+type Limits struct {
 	MaxLines int     `json:"max-lines"`
 	Ratio    float64 `json:"ratio"`
 	MinLines int     `json:"min-lines"`
 }
 
-// funcLimits alone has complexity-ratio, so strict decoding rejects that key under decls.
-type funcLimits struct {
+// FuncLimits alone has ComplexityRatio, so strict decoding rejects complexity-ratio under decls.
+type FuncLimits struct {
 	MaxLines        int     `json:"max-lines"`
 	Ratio           float64 `json:"ratio"`
 	MinLines        int     `json:"min-lines"`
 	ComplexityRatio float64 `json:"complexity-ratio"`
 }
 
-type settings struct {
-	Funcs funcLimits `json:"funcs"`
-	Decls limits     `json:"decls"`
+// Settings configures the analyzer. Start from DefaultSettings: the zero value disables every limit.
+type Settings struct {
+	Funcs FuncLimits `json:"funcs"`
+	Decls Limits     `json:"decls"`
+}
+
+// DefaultSettings returns the settings used when nothing is configured.
+func DefaultSettings() Settings {
+	return Settings{
+		Funcs: FuncLimits{MaxLines: 3, Ratio: 0.15, MinLines: 1},
+		Decls: Limits{MaxLines: 2, Ratio: 1, MinLines: 1},
+	}
+}
+
+// NewAnalyzer returns the commentlint analyzer for s, rejecting negative values.
+func NewAnalyzer(s Settings) (*analysis.Analyzer, error) {
+	// These can't fail: s holds only numbers.
+	var values map[string]any
+	encoded, _ := json.Marshal(s)
+	_ = json.Unmarshal(encoded, &values)
+	if err := rejectNegative(values, ""); err != nil {
+		return nil, err
+	}
+	return &analysis.Analyzer{
+		Name: "commentlint",
+		Doc:  "reports comments that are larger than the code they describe allows",
+		Run:  func(pass *analysis.Pass) (any, error) { return run(pass, s) },
+	}, nil
+}
+
+func rejectNegative(values map[string]any, path string) error {
+	for key, value := range values {
+		switch value := value.(type) {
+		case map[string]any:
+			if err := rejectNegative(value, path+key+"."); err != nil {
+				return err
+			}
+		case float64:
+			if value < 0 {
+				return fmt.Errorf("commentlint: %s must not be negative, got %v", path+key, value)
+			}
+		}
+	}
+	return nil
 }
 
 // New builds the plugin from the raw settings golangci-lint decodes from .golangci.yml.
 func New(rawSettings any) (register.LinterPlugin, error) {
-	s := settings{
-		Funcs: funcLimits{MaxLines: 3, Ratio: 0.15, MinLines: 1},
-		Decls: limits{MaxLines: 2, Ratio: 1, MinLines: 1},
-	}
+	s := DefaultSettings()
 	raw, err := json.Marshal(rawSettings)
 	if err != nil {
 		return nil, fmt.Errorf("commentlint: encoding settings: %w", err)
@@ -62,27 +101,26 @@ func New(rawSettings any) (register.LinterPlugin, error) {
 	_ = json.Unmarshal(raw, &input)
 	decoded, _ := json.Marshal(s)
 	_ = json.Unmarshal(decoded, &known)
-	if err := validate(input, known, ""); err != nil {
+	if err := rejectMiscased(input, known, ""); err != nil {
 		return nil, err
 	}
-	return &plugin{settings: s}, nil
+	analyzer, err := NewAnalyzer(s)
+	if err != nil {
+		return nil, err
+	}
+	return &plugin{analyzer: analyzer}, nil
 }
 
-// validate rejects negative values and keys that differ from a known key only in case, which encoding/json accepts.
-func validate(input, known map[string]any, path string) error {
+// rejectMiscased rejects keys that differ from a known key only in case, which encoding/json accepts.
+func rejectMiscased(input, known map[string]any, path string) error {
 	for key, value := range input {
 		knownValue, ok := known[key]
 		if !ok {
 			return fmt.Errorf("commentlint: unknown key %q", path+key)
 		}
-		switch value := value.(type) {
-		case map[string]any:
-			if err := validate(value, knownValue.(map[string]any), path+key+"."); err != nil {
+		if value, ok := value.(map[string]any); ok {
+			if err := rejectMiscased(value, knownValue.(map[string]any), path+key+"."); err != nil {
 				return err
-			}
-		case float64:
-			if value < 0 {
-				return fmt.Errorf("commentlint: %s must not be negative, got %v", path+key, value)
 			}
 		}
 	}
@@ -90,23 +128,19 @@ func validate(input, known map[string]any, path string) error {
 }
 
 type plugin struct {
-	settings settings
+	analyzer *analysis.Analyzer
 }
 
 func (p *plugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
-	return []*analysis.Analyzer{{
-		Name: "commentlint",
-		Doc:  "reports comments that are larger than the code they describe allows",
-		Run:  p.run,
-	}}, nil
+	return []*analysis.Analyzer{p.analyzer}, nil
 }
 
 func (p *plugin) GetLoadMode() string {
 	return register.LoadModeTypesInfo
 }
 
-func (p *plugin) run(pass *analysis.Pass) (any, error) {
-	fl := p.settings.Funcs
+func run(pass *analysis.Pass, s Settings) (any, error) {
+	fl := s.Funcs
 	for _, f := range pass.Files {
 		tf := pass.Fset.File(f.Pos())
 		if strings.HasSuffix(tf.Name(), "_test.go") || ast.IsGenerated(f) {
@@ -119,8 +153,8 @@ func (p *plugin) run(pass *analysis.Pass) (any, error) {
 		c := checker{
 			pass:            pass,
 			code:            scanCodeLines(tf, src),
-			funcs:           rule{group: "funcs", limits: limits{MaxLines: fl.MaxLines, Ratio: fl.Ratio, MinLines: fl.MinLines}},
-			decls:           rule{group: "decls", limits: p.settings.Decls},
+			funcs:           rule{group: "funcs", Limits: Limits{MaxLines: fl.MaxLines, Ratio: fl.Ratio, MinLines: fl.MinLines}},
+			decls:           rule{group: "decls", Limits: s.Decls},
 			complexityRatio: fl.ComplexityRatio,
 		}
 		for _, decl := range f.Decls {
@@ -135,7 +169,7 @@ func (p *plugin) run(pass *analysis.Pass) (any, error) {
 
 type rule struct {
 	group string
-	limits
+	Limits
 	// complexityRatio caps the allowance by complexity, the cognitive complexity of the func; set only for func docs.
 	complexityRatio float64
 	complexity      int

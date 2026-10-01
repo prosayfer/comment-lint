@@ -53,6 +53,10 @@ commentlint ./...
 
 The standalone binary always uses the default settings.
 
+### Library
+
+`commentlint.NewAnalyzer(commentlint.DefaultSettings())` returns a plain `*analysis.Analyzer`; adjust the `Settings` fields before passing them.
+
 ## Settings
 
 Keys go under `linters.settings.custom.commentlint.settings`. Unknown keys, negative numbers and wrong types fail at startup. Setting any limit to `0` disables it.
@@ -145,3 +149,7 @@ example.go:3:1: func doc has 3 comment lines, allowed 1 (funcs.min-lines) (comme
 ```
 
 There are no automatic fixes. To make a justified exception under golangci-lint, put `//nolint:commentlint` as the first line of the block. Directive lines don't count towards the block's size.
+
+## License
+
+[MIT](LICENSE)

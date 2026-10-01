@@ -62,6 +62,14 @@ func TestInvalidSettings(t *testing.T) {
 	}
 }
 
+func TestNewAnalyzerRejectsNegative(t *testing.T) {
+	s := commentlint.DefaultSettings()
+	s.Funcs.ComplexityRatio = -0.1
+	if _, err := commentlint.NewAnalyzer(s); err == nil || !strings.Contains(err.Error(), "funcs.complexity-ratio") {
+		t.Fatalf("NewAnalyzer() error = %v, want it to mention funcs.complexity-ratio", err)
+	}
+}
+
 func TestCommentLineCounting(t *testing.T) {
 	run(t, map[string]any{"funcs": map[string]any{"ratio": 0}}, "counting")
 }
