@@ -67,6 +67,30 @@ Keys go under `linters.settings.custom.commentlint.settings`. Unknown keys, nega
 | `decls` | `ratio` | 1.0 | Allowed comment lines per code line (so a comment can't be longer than its code) |
 | `decls` | `min-lines` | 1 | Guaranteed allowance (floor) |
 
+A full configuration with every key at its default:
+
+```yaml
+version: "2"
+linters:
+  enable:
+    - commentlint
+  settings:
+    custom:
+      commentlint:
+        type: module
+        description: Limits comment size relative to the code it describes.
+        settings:
+          funcs:
+            max-lines: 3
+            ratio: 0.15
+            min-lines: 1
+            complexity-ratio: 0 # 0.1 suggested, see below
+          decls:
+            max-lines: 2
+            ratio: 1.0
+            min-lines: 1
+```
+
 `funcs` covers functions, methods and `init`, and applies to both their doc comments and the comments inside their bodies (including closures, also those assigned to package-level vars). `decls` covers struct types, other named types, type aliases, vars, consts and struct fields.
 
 ## Allowance formula
