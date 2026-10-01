@@ -132,3 +132,33 @@ func localTypes() {
 		Do()
 	}
 }
+
+func localContracts() {
+	// Handler is a local func type, documented as a contract.
+	// Two.
+	type Handler func()
+	// Alias is a local alias of a func type, also a contract.
+	// Two.
+	type Alias = func()
+	type hooks struct {
+		// OnDone is a func-typed field of a local struct.
+		// Two.
+		OnDone func()
+		// Count is not a contract. // want "in-body comment has 2 comment lines, allowed 1 \\(funcs.min-lines\\)"
+		// Two.
+		Count int
+	}
+}
+
+var packageClosure = func() int {
+	n := 0
+	// A package-level closure is checked as a func body. // want "in-body comment has 2 comment lines, allowed 1 \\(funcs.min-lines\\)"
+	// Two.
+	n++
+	type local struct {
+		// Its local struct fields are reported once. // want "in-body comment has 2 comment lines, allowed 1 \\(funcs.min-lines\\)"
+		// Two.
+		F int
+	}
+	return n
+}

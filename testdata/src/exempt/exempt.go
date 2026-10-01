@@ -35,6 +35,18 @@ type Number interface {
 // Four.
 type HandlerFunc func(n int) error
 
+// ReaderAlias is an alias of an interface.
+// Two.
+// Three.
+// Four.
+type ReaderAlias = Reader
+
+// FuncAlias is an alias of a func type.
+// Two.
+// Three.
+// Four.
+type FuncAlias = func()
+
 // Contracts groups only exempt types.
 // Two.
 // Three.

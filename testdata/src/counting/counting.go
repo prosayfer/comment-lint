@@ -30,6 +30,24 @@ Four. // want "func doc has 4 comment lines, allowed 3 \\(funcs.max-lines\\)"
 */
 func blockOver() {}
 
+/**
+ * starred has three text lines.
+ *
+ * Two.
+ *
+ * Three.
+ */
+func starred() {}
+
+/**
+ * starredOver has four text lines.
+ *
+ * Two.
+ * Three.
+ * Four. // want "func doc has 4 comment lines, allowed 3 \\(funcs.max-lines\\)"
+ */
+func starredOver() {}
+
 /* single is one line. */
 // Two.
 // Three.

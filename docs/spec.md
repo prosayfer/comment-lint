@@ -95,7 +95,7 @@ The allowance for a block depends on the size of that code, a hard line cap, a g
 - Allowed lines = min(max-lines, max(min-lines, min(ceil(code_lines × ratio), ceil(cognitive_complexity × complexity-ratio)))).
 - The complexity term applies only to function doc comments and only when complexity-ratio > 0. Disabled terms drop out of the formula.
 - ceil is used for rounding. A block violates the rules when its comment-line count exceeds the allowed lines.
-- The limit that ended up binding (max-lines, ratio, complexity-ratio) is recorded so the diagnostic can name it. When the floor raised the allowance, the diagnostic names min-lines.
+- The limit that ended up binding (max-lines, ratio, complexity-ratio) is recorded so the diagnostic can name it. When the floor decided the allowance, including a tie with the ratio or complexity term, the diagnostic names min-lines.
 - Cognitive complexity comes from the `github.com/uudashr/gocognit` package, computed on the function declaration. Its numbers must match gocognit's own reports.
 
 **Block model**
@@ -113,16 +113,17 @@ The allowance for a block depends on the size of that code, a hard line cap, a g
 - A comment line has actual text. These don't count:
   - directive lines: `//go:` forms, `//nolint`, `//export`, `// +build`, `//line`
   - empty `//` lines
-  - lines of a block comment that hold only `/*` or `*/`
+  - lines of a block comment that hold only `/*`, `*/` or `*` decoration (as in `/** … */` blocks)
 - A code line is a non-blank line that isn't only a comment.
 
 **Grouping and exemptions**
-- `funcs` group: functions, methods, `init`. Closures are not separate declarations; comments inside them are in-body blocks of the enclosing function.
-- `decls` group: struct types, named non-struct types, type aliases, vars, consts, struct fields.
+- `funcs` group: functions, methods, `init`. Closures are not separate declarations; comments inside them are in-body blocks of the enclosing function. A func literal in a package-level var counts as a function body, so its comments are `funcs` in-body blocks. Comments in package-level composite literals outside any func body aren't checked.
+- `decls` group: struct types, named non-struct types, type aliases (other than the exempt ones below), vars, consts, struct fields.
 - Always exempt:
-  - interface types (including generic constraint interfaces) and the doc comments on their methods
-  - named func types
+  - interface types (including generic constraint interfaces) and the doc comments on their methods, whether defined or aliased
+  - named func types, whether defined or aliased
   - struct fields whose type is a func type
+  - these hold at package level and inside function bodies alike
   - package doc comments
   - free-floating comments not attached to any declaration or node
 - Not exempt: func-typed variables, fields or vars whose type is an interface.

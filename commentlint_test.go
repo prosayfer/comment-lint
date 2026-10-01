@@ -4,13 +4,12 @@ import (
 	"strings"
 	"testing"
 
-	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/analysistest"
 
 	commentlint "github.com/prosayfer/comment-lint"
 )
 
-func analyzer(t *testing.T, settings any) *analysis.Analyzer {
+func run(t *testing.T, settings any, pkg string) {
 	t.Helper()
 	plugin, err := commentlint.New(settings)
 	if err != nil {
@@ -20,12 +19,7 @@ func analyzer(t *testing.T, settings any) *analysis.Analyzer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return analyzers[0]
-}
-
-func run(t *testing.T, settings any, pkg string) {
-	t.Helper()
-	analysistest.Run(t, analysistest.TestData(), analyzer(t, settings), pkg)
+	analysistest.Run(t, analysistest.TestData(), analyzers[0], pkg)
 }
 
 func TestFuncDocMaxLinesDefault(t *testing.T) {
@@ -55,6 +49,8 @@ func TestInvalidSettings(t *testing.T) {
 		"string ratio":          {map[string]any{"funcs": map[string]any{"ratio": "high"}}, "funcs.ratio"},
 		"fractional max-lines":  {map[string]any{"decls": map[string]any{"max-lines": 1.5}}, "decls.max-lines"},
 		"group not a map":       {map[string]any{"funcs": 3}, "funcs"},
+		"group in wrong case":   {map[string]any{"FUNCS": map[string]any{}}, `"FUNCS"`},
+		"key in wrong case":     {map[string]any{"funcs": map[string]any{"Max-Lines": 5}}, `"funcs.Max-Lines"`},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -104,4 +100,8 @@ func TestFuncDocComplexityCeilingOffByDefault(t *testing.T) {
 
 func TestComplexityCeilingSkipsInBodyAndTrailingComments(t *testing.T) {
 	run(t, map[string]any{"funcs": map[string]any{"complexity-ratio": 0.1, "min-lines": 0}}, "complexityinbody")
+}
+
+func TestCRLFCountsLikeLF(t *testing.T) {
+	run(t, nil, "crlf")
 }

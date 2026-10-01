@@ -57,23 +57,36 @@ func New(rawSettings any) (register.LinterPlugin, error) {
 	if err := decoder.Decode(&s); err != nil {
 		return nil, fmt.Errorf("commentlint: decoding settings: %w", err)
 	}
-	for _, v := range []struct {
-		key   string
-		value float64
-	}{
-		{"funcs.max-lines", float64(s.Funcs.MaxLines)},
-		{"funcs.ratio", s.Funcs.Ratio},
-		{"funcs.min-lines", float64(s.Funcs.MinLines)},
-		{"funcs.complexity-ratio", s.Funcs.ComplexityRatio},
-		{"decls.max-lines", float64(s.Decls.MaxLines)},
-		{"decls.ratio", s.Decls.Ratio},
-		{"decls.min-lines", float64(s.Decls.MinLines)},
-	} {
-		if v.value < 0 {
-			return nil, fmt.Errorf("commentlint: %s must not be negative, got %v", v.key, v.value)
-		}
+	// These can't fail: raw just decoded into s, and s holds only numbers.
+	var input, known map[string]any
+	_ = json.Unmarshal(raw, &input)
+	decoded, _ := json.Marshal(s)
+	_ = json.Unmarshal(decoded, &known)
+	if err := validate(input, known, ""); err != nil {
+		return nil, err
 	}
 	return &plugin{settings: s}, nil
+}
+
+// validate rejects negative values and keys that differ from a known key only in case, which encoding/json accepts.
+func validate(input, known map[string]any, path string) error {
+	for key, value := range input {
+		knownValue, ok := known[key]
+		if !ok {
+			return fmt.Errorf("commentlint: unknown key %q", path+key)
+		}
+		switch value := value.(type) {
+		case map[string]any:
+			if err := validate(value, knownValue.(map[string]any), path+key+"."); err != nil {
+				return err
+			}
+		case float64:
+			if value < 0 {
+				return fmt.Errorf("commentlint: %s must not be negative, got %v", path+key, value)
+			}
+		}
+	}
+	return nil
 }
 
 type plugin struct {
@@ -94,10 +107,6 @@ func (p *plugin) GetLoadMode() string {
 
 func (p *plugin) run(pass *analysis.Pass) (any, error) {
 	fl := p.settings.Funcs
-	funcs := rule{group: "funcs", limits: limits{MaxLines: fl.MaxLines, Ratio: fl.Ratio, MinLines: fl.MinLines}}
-	funcDocs := funcs
-	funcDocs.complexityRatio = fl.ComplexityRatio
-	decls := rule{group: "decls", limits: p.settings.Decls}
 	for _, f := range pass.Files {
 		tf := pass.Fset.File(f.Pos())
 		if strings.HasSuffix(tf.Name(), "_test.go") || ast.IsGenerated(f) {
@@ -107,7 +116,13 @@ func (p *plugin) run(pass *analysis.Pass) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		c := checker{pass: pass, code: codeLines(tf, src), funcs: funcs, funcDocs: funcDocs, decls: decls}
+		c := checker{
+			pass:            pass,
+			code:            scanCodeLines(tf, src),
+			funcs:           rule{group: "funcs", limits: limits{MaxLines: fl.MaxLines, Ratio: fl.Ratio, MinLines: fl.MinLines}},
+			decls:           rule{group: "decls", limits: p.settings.Decls},
+			complexityRatio: fl.ComplexityRatio,
+		}
 		for _, decl := range f.Decls {
 			c.checkDecl(decl)
 		}
@@ -152,9 +167,11 @@ func ceil(x float64) int {
 }
 
 type checker struct {
-	pass                   *analysis.Pass
-	code                   lineSet
-	funcs, funcDocs, decls rule
+	pass         *analysis.Pass
+	code         codeLines
+	funcs, decls rule
+	// complexityRatio applies only to func docs, so it is set on their rule together with the func's complexity.
+	complexityRatio float64
 }
 
 func (c *checker) check(g *ast.CommentGroup, kind string, r rule, code int) {
@@ -170,14 +187,14 @@ func (c *checker) check(g *ast.CommentGroup, kind string, r rule, code int) {
 func (c *checker) checkDecl(decl ast.Decl) {
 	switch decl := decl.(type) {
 	case *ast.FuncDecl:
-		doc := c.funcDocs
-		doc.complexity = gocognit.Complexity(decl)
+		doc := c.funcs
+		doc.complexityRatio, doc.complexity = c.complexityRatio, gocognit.Complexity(decl)
 		c.check(decl.Doc, "func doc", doc, c.code.count(decl))
 	case *ast.GenDecl:
 		if decl.Tok == token.IMPORT {
 			return
 		}
-		if slices.ContainsFunc(decl.Specs, func(spec ast.Spec) bool { return !c.isContract(spec) }) {
+		if !c.isContract(decl) {
 			c.check(decl.Doc, "decl doc", c.decls, c.code.count(decl))
 		}
 		for _, spec := range decl.Specs {
@@ -198,9 +215,13 @@ func (c *checker) checkSpec(spec ast.Spec) {
 		c.check(spec.Comment, "trailing comment", c.decls, 1)
 	}
 	ast.Inspect(spec, func(n ast.Node) bool {
-		if st, ok := n.(*ast.StructType); ok {
-			for _, field := range st.Fields.List {
-				if _, isFunc := c.pass.TypesInfo.TypeOf(field.Type).Underlying().(*types.Signature); !isFunc {
+		switch n := n.(type) {
+		case *ast.FuncLit:
+			// checkInBody owns everything inside a func literal.
+			return false
+		case *ast.StructType:
+			for _, field := range n.Fields.List {
+				if !c.isContract(field) {
 					c.check(field.Doc, "field comment", c.decls, c.code.count(field))
 					c.check(field.Comment, "trailing comment", c.decls, 1)
 				}
@@ -213,16 +234,20 @@ func (c *checker) checkSpec(spec ast.Spec) {
 // checkInBody measures a comment inside a func body against the node it precedes within its innermost enclosing node.
 func (c *checker) checkInBody(f *ast.File, g *ast.CommentGroup) {
 	path, _ := astutil.PathEnclosingInterval(f, g.Pos(), g.End())
-	if len(path) < 2 {
+	inBody := slices.ContainsFunc(path, func(n ast.Node) bool {
+		var body *ast.BlockStmt
+		switch n := n.(type) {
+		case *ast.FuncDecl:
+			body = n.Body
+		case *ast.FuncLit:
+			body = n.Body
+		}
+		return body != nil && body.Lbrace < g.Pos()
+	})
+	if !inBody || slices.ContainsFunc(path, func(n ast.Node) bool { _, ok := n.(*ast.InterfaceType); return ok }) {
 		return
 	}
-	if fn, ok := path[len(path)-2].(*ast.FuncDecl); !ok || fn.Body == nil || g.Pos() < fn.Body.Lbrace {
-		return
-	}
-	if slices.ContainsFunc(path, func(n ast.Node) bool { _, ok := n.(*ast.InterfaceType); return ok }) {
-		return
-	}
-	if c.code.startsBefore(g.Pos()) {
+	if first, ok := c.code.lines[c.code.line(g.Pos())]; ok && first < g.Pos() {
 		c.check(g, "trailing comment", c.funcs, 1)
 		return
 	}
@@ -236,34 +261,41 @@ func (c *checker) checkInBody(f *ast.File, g *ast.CommentGroup) {
 		}
 		return false
 	})
-	code := 1
-	if next != nil {
-		code = c.code.count(next)
+	if decl, ok := next.(*ast.DeclStmt); ok {
+		next = decl.Decl
 	}
-	c.check(g, "in-body comment", c.funcs, code)
+	if next == nil {
+		c.check(g, "in-body comment", c.funcs, 1)
+	} else if !c.isContract(next) {
+		c.check(g, "in-body comment", c.funcs, c.code.count(next))
+	}
 }
 
-// isContract reports whether spec declares an interface or func type, whose docs describe a contract and are exempt.
-func (c *checker) isContract(spec ast.Spec) bool {
-	ts, ok := spec.(*ast.TypeSpec)
-	if !ok {
-		return false
-	}
-	switch c.pass.TypesInfo.Defs[ts.Name].Type().Underlying().(type) {
-	case *types.Interface, *types.Signature:
-		return true
+// isContract reports whether n declares only interface or func types, or is a func-typed field; their docs are exempt.
+func (c *checker) isContract(n ast.Node) bool {
+	switch n := n.(type) {
+	case *ast.GenDecl:
+		return !slices.ContainsFunc(n.Specs, func(spec ast.Spec) bool { return !c.isContract(spec) })
+	case *ast.TypeSpec:
+		switch c.pass.TypesInfo.TypeOf(n.Type).Underlying().(type) {
+		case *types.Interface, *types.Signature:
+			return true
+		}
+	case *ast.Field:
+		_, isFunc := c.pass.TypesInfo.TypeOf(n.Type).Underlying().(*types.Signature)
+		return isFunc
 	}
 	return false
 }
 
-// lineSet maps each line of a file that contains code to the position of its first code token.
-type lineSet struct {
+// codeLines maps each line of a file that contains code to the position of its first code token.
+type codeLines struct {
 	file  *token.File
 	lines map[int]token.Pos
 }
 
-func codeLines(tf *token.File, src []byte) lineSet {
-	set := lineSet{file: tf, lines: map[int]token.Pos{}}
+func scanCodeLines(tf *token.File, src []byte) codeLines {
+	set := codeLines{file: tf, lines: map[int]token.Pos{}}
 	var s scanner.Scanner
 	s.Init(tf, src, nil, 0)
 	for {
@@ -274,11 +306,9 @@ func codeLines(tf *token.File, src []byte) lineSet {
 		if tok == token.SEMICOLON && lit == "\n" {
 			continue
 		}
-		end := pos
-		if tok == token.STRING {
-			end += token.Pos(len(lit) - 1)
-		}
-		for line := set.line(pos); line <= set.line(end); line++ {
+		// Counts newlines rather than bytes, because the scanner strips \r from raw strings.
+		first := set.line(pos)
+		for line := first; line <= first+strings.Count(lit, "\n"); line++ {
 			if _, ok := set.lines[line]; !ok {
 				set.lines[line] = pos
 			}
@@ -287,11 +317,11 @@ func codeLines(tf *token.File, src []byte) lineSet {
 }
 
 // line ignores //line directives, which would otherwise remap positions.
-func (s lineSet) line(p token.Pos) int {
+func (s codeLines) line(p token.Pos) int {
 	return s.file.PositionFor(p, false).Line
 }
 
-func (s lineSet) count(n ast.Node) int {
+func (s codeLines) count(n ast.Node) int {
 	count := 0
 	for line := s.line(n.Pos()); line <= s.line(n.End()); line++ {
 		if _, ok := s.lines[line]; ok {
@@ -301,35 +331,24 @@ func (s lineSet) count(n ast.Node) int {
 	return count
 }
 
-// startsBefore reports whether code precedes p on its line.
-func (s lineSet) startsBefore(p token.Pos) bool {
-	first, ok := s.lines[s.line(p)]
-	return ok && first < p
-}
-
 func commentLines(g *ast.CommentGroup) int {
 	n := 0
 	for _, c := range g.List {
 		if text, ok := strings.CutPrefix(c.Text, "//"); ok {
-			if !isDirective(text) && strings.TrimSpace(text) != "" {
+			directive := slices.ContainsFunc([]string{"go:", "nolint", "export ", "line ", " +build"}, func(prefix string) bool {
+				return strings.HasPrefix(text, prefix)
+			})
+			if !directive && strings.TrimSpace(text) != "" {
 				n++
 			}
 			continue
 		}
 		for _, line := range strings.Split(strings.TrimSuffix(strings.TrimPrefix(c.Text, "/*"), "*/"), "\n") {
-			if strings.TrimSpace(line) != "" {
+			// A line of only `*` is decoration, as in /** … */ blocks.
+			if strings.Trim(line, " \t*") != "" {
 				n++
 			}
 		}
 	}
 	return n
-}
-
-func isDirective(text string) bool {
-	for _, prefix := range []string{"go:", "nolint", "export ", "line ", " +build"} {
-		if strings.HasPrefix(text, prefix) {
-			return true
-		}
-	}
-	return false
 }

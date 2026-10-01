@@ -7,7 +7,7 @@
 **Status:** ready-for-agent
 
 - [ ] A 2-line comment above a single `i++` is flagged, and a 1-line comment passes
-- [ ] A 2-line comment above a 14-code-line `for` loop passes (`ceil(14 × 0.15) = 2`), and a 3-line one is flagged
+- [ ] A 2-line comment above a 13-code-line `for` loop passes (`ceil(13 × 0.15) = 2`), and a 3-line one is flagged
 - [ ] A comment before a `case` clause is measured against that clause
 - [ ] A comment inside a composite literal is measured against the element that follows it
 - [ ] A multi-line comment right before `}` with nothing after it is flagged under `min-lines`

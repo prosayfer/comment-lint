@@ -67,7 +67,7 @@ Keys go under `linters.settings.custom.commentlint.settings`. Unknown keys, nega
 | `decls` | `ratio` | 1.0 | Allowed comment lines per code line (so a comment can't be longer than its code) |
 | `decls` | `min-lines` | 1 | Guaranteed allowance (floor) |
 
-`funcs` covers functions, methods and `init`, and applies to both their doc comments and the comments inside their bodies (including closures). `decls` covers struct types, other named types, type aliases, vars, consts and struct fields.
+`funcs` covers functions, methods and `init`, and applies to both their doc comments and the comments inside their bodies (including closures, also those assigned to package-level vars). `decls` covers struct types, other named types, type aliases, vars, consts and struct fields.
 
 ## Allowance formula
 
@@ -83,7 +83,7 @@ allowed = min(max-lines, max(min-lines, min(ceil(code_lines × ratio), ceil(cogn
 - The diagnostic names the setting that decided the limit. On a tie, the later step in the formula wins: `min-lines` beats `ratio` and `complexity-ratio`, and `max-lines` beats everything.
 - Cognitive complexity is computed with [gocognit](https://github.com/uudashr/gocognit) and matches its reports.
 
-A **comment line** has actual text. Directive lines (`//go:…`, `//nolint`, `//export`, `// +build`, `//line`), empty `//` lines and lines that hold only `/*` or `*/` don't count. A **code line** is a non-blank line that isn't only a comment.
+A **comment line** has actual text. Directive lines (`//go:…`, `//nolint`, `//export`, `// +build`, `//line`), empty `//` lines and lines that hold only `/*`, `*/` or `*` don't count. A **code line** is a non-blank line that isn't only a comment.
 
 ### Suggested complexity ratio: 0.1
 
@@ -102,8 +102,8 @@ Each comment block is checked on its own, not summed per declaration.
 
 Never checked:
 
-- interface types (including constraint interfaces) and the comments on their methods
-- named func types
+- interface types (including constraint interfaces) and the comments on their methods, whether defined or aliased
+- named func types, whether defined or aliased
 - struct fields whose type is a func type
 - package doc comments
 - free-floating comments not attached to a declaration or node, such as license headers
